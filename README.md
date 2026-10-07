@@ -1,79 +1,60 @@
-# rn-58904-textinput-lost-key
+# Reproducer for react/react-native#58904
 
-![Build](https://github.com/vdzerkalo/rn-58904-textinput-lost-key/workflows/Pre%20Merge%20Checks/badge.svg)
+**[iOS][Fabric] `TextInput` drops a keystroke right after the first character typed into an empty field.**
 
-This is your new React Native Reproducer project.
+Issue: https://github.com/react/react-native/issues/58904
 
-# Reproducer TODO list
+Made from the [React Native reproducer template](https://github.com/react-native-community/reproducer-react-native): react-native 0.87.1 (latest), New Architecture, no extra dependencies. The issue was found on 0.86.3; `RCTTextInputComponentView.mm` is the same in 0.87.1 apart from one comment.
 
-- [x] 1. Create a new reproducer project.
-- [ ] 2. Git clone your repository locally.
-- [ ] 3. Edit the project to reproduce the failure you're seeing.
-- [ ] 4. Push your changes, so that Github Actions can run the CI.
-- [ ] 5. Make sure the repository is public and share the link with the issue you reported.
+## What the app does
 
-# How to use this Reproducer
+[`ReproducerApp/App.tsx`](ReproducerApp/App.tsx) renders six empty, uncontrolled `TextInput`s (`defaultValue=""`, `keyboardType="number-pad"`, a style with `fontSize`, `lineHeight` and `color`). Each row compares the keys `onKeyPress` reported with the characters that landed in the field. A lost key still fires `onKeyPress`, but never reaches the field.
 
-This project has been created with `npx @react-native-community/cli init` and is a vanilla React Native app.
+## Steps
 
-> [!IMPORTANT]  
-> Make sure you have completed the [React Native - Environment Setup](https://reactnative.dev/docs/set-up-your-environment) so that you have a working environment locally.
-
-## Step 1: Start the Metro Server
-
-First, you will need to start **Metro**, the JavaScript _bundler_ that ships _with_ React Native.
-
-To start Metro, run the following command from the _root_ of your React Native project:
-
-```bash
-# using npm
-npm start
-
-# OR using Yarn
-yarn start
+```sh
+cd ReproducerApp
+yarn install
+cd ios && bundle install && bundle exec pod install && cd ..
+yarn ios --mode Release   # Debug (`yarn start` + `yarn ios`) reproduces too, less often
 ```
 
-## Step 2: Start your Application
+1. In the iOS Simulator, use the Mac keyboard (I/O > Keyboard > Connect Hardware Keyboard).
+2. Tap **Field 1** and type `2` then `8` quickly, as one burst. Then Field 2, and so on.
+3. **Expected:** every row reads `pressed "28" → "28"`. **Actual:** some rows read `pressed "28" → "2" LOST`.
 
-Let Metro Bundler run in its _own_ terminal. Open a _new_ terminal from the _root_ of your React Native project. Run the following command to start your _Android_ or _iOS_ app:
+For another round, relaunch the app (the numbers below come from fresh launches; the **New empty fields** button also gives empty fields, but Fabric may hand them recycled native views).
 
-### For Android
+| React Native 0.87.1 as is | With the suggested fix |
+|---|---|
+| <img src="screenshots/as-is.png" width="300" alt="5 of 6 bursts lost the second key"> | <img src="screenshots/suggested-fix.png" width="300" alt="0 of 6 bursts lost a key"> |
 
-```bash
-# using npm
-npm run android
+## Results
 
-# OR using Yarn
-yarn android
+iPhone 17 Pro simulator, iOS 27.0, Xcode 27.0 (27A266a), 2026-10-07. A round = a fresh launch and six bursts of `28` sent through the simulator's hardware keyboard; JS received the second key 0-33 ms after the first.
+
+| Build | Bursts | Lost a key |
+|---|---|---|
+| Release, React Native 0.87.1 as is | 18 | 9 (1, 3, 5 per round) |
+| Release, with the suggested fix (`-ApplySuggestedFix YES`) | 18 | 0 |
+| Debug, React Native 0.87.1 as is | 12 | 2 |
+
+## The suggested fix, as a switch (off by default)
+
+The issue suggests one more exception in `-[RCTTextInputComponentView _textOf:equals:]`: while the backed text input is the first responder, two strings with the same characters are equal, so the state round trip of the first character never calls `setAttributedText:` on a focused field.
+
+[`AppDelegate.swift`](ReproducerApp/ios/ReproducerApp/AppDelegate.swift) can apply that change at runtime, so it can be compared without building React Native from source (the template links the prebuilt React Native core). It is OFF unless the app is launched with `-ApplySuggestedFix YES`:
+
+```sh
+xcrun simctl launch booted org.reactjs.native.example.ReproducerApp -ApplySuggestedFix YES
 ```
 
-### For iOS
+(or Xcode: Product > Scheme > Edit Scheme > Run > Arguments Passed On Launch). The device log then shows `[58904] suggested fix applied`.
 
-First, make sure you install dependencies with:
+## Changes from the template
 
-```bash
-cd ios && bundle install && bundle exec pod install
-```
+- `ReproducerApp/App.tsx`: the reproducer.
+- `ReproducerApp/ios/ReproducerApp/AppDelegate.swift`: the optional switch above, and a `SceneDelegate`.
+- `ReproducerApp/ios/ReproducerApp/Info.plist`: `UIApplicationSceneManifest`.
 
-Then you can run the iOS app with:
-
-```bash
-# using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
-
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
-
-## Step 3: Modifying your App
-
-Now that you have successfully run the app, let's modify it.
-
-1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
-
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+The scene change is not part of the bug: the template creates its window in the app delegate, and an app built with the iOS 27 SDK that does not adopt the UIScene life cycle stops at launch on iOS 27 (Apple TN3187). The `SceneDelegate` only creates the window and starts React Native in it.
